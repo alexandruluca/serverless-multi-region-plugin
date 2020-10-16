@@ -3,6 +3,8 @@ const _ = require('lodash')
 const yaml = require('js-yaml')
 const fs = require('fs')
 
+const CDN_REGION = 'us-east-1';
+
 class Plugin {
   constructor(serverless, options) {
     this.serverless = serverless
@@ -39,9 +41,9 @@ class Plugin {
       return
     }
 
-    this.hostName = `${hostSegments[hostSegments.length - 2]}.${
-      hostSegments[hostSegments.length - 1]
-    }`
+    hostSegments.shift();
+
+    this.hostName = hostSegments.join('.')
     this.regionalDomainName = this.buildRegionalDomainName(hostSegments)
 
     const baseResources = this.serverless.service.provider.compiledCloudFormationTemplate
@@ -62,8 +64,11 @@ class Plugin {
 
   prepareResources(resources) {
     const credentials = this.serverless.providers.aws.getCredentials()
-    const acmCredentials = Object.assign({}, credentials, { region: this.options.region })
+    const acmCredentials = Object.assign({}, credentials, {region: this.options.region});
+    const cdnAcmCredentials = Object.assign({}, credentials, {region: CDN_REGION});
+
     this.acm = new this.serverless.providers.aws.sdk.ACM(acmCredentials)
+    this.cdnAcm = new this.serverless.providers.aws.sdk.ACM(cdnAcmCredentials);
 
     const distributionConfig = resources.Resources.ApiDistribution.Properties.DistributionConfig
     const cloudFrontRegion = this.serverless.service.custom.cdn.region
@@ -241,7 +246,7 @@ class Plugin {
       distributionConfig.ViewerCertificate.AcmCertificateArn = acmCertificateArn
       return Promise.resolve()
     } else {
-      return this.getCertArnFromHostName().then(certArn => {
+      return this.getCertArnFromHostName(this.cdnAcm).then(certArn => {
         if (certArn) {
           distributionConfig.ViewerCertificate.AcmCertificateArn = certArn
         } else {
@@ -299,9 +304,10 @@ class Plugin {
   /*
    * Obtains the certification arn
    */
-  getCertArnFromHostName() {
-    const certRequest = this.acm
-      .listCertificates({ CertificateStatuses: ['PENDING_VALIDATION', 'ISSUED', 'INACTIVE'] })
+  getCertArnFromHostName(acm) {
+    acm = acm || this.acm;
+    const certRequest = acm
+      .listCertificates({CertificateStatuses: ['PENDING_VALIDATION', 'ISSUED', 'INACTIVE']})
       .promise()
 
     return certRequest
@@ -309,7 +315,7 @@ class Plugin {
         // The more specific name will be the longest
         let nameLength = 0
         let certArn
-        const certificates = data.CertificateSummaryList
+        const certificates = data.CertificateSummaryList;
 
         // Derive certificate from domain name
         certificates.forEach(certificate => {
